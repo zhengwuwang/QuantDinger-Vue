@@ -130,12 +130,6 @@
             autocomplete="new-password"
           />
         </a-form-item>
-        <a-form-item v-if="addExchangeShowDemo">
-          <a-checkbox v-decorator="['enable_demo_trading', { valuePropName: 'checked', initialValue: false }]" class="exchange-demo-checkbox">
-            <span class="exchange-demo-checkbox-label">{{ $t('profile.exchange.demoTrading') }}</span>
-          </a-checkbox>
-          <div class="field-hint exchange-demo-hint">{{ $t('profile.exchange.demoTradingHint') }}</div>
-        </a-form-item>
       </template>
 
       <template v-if="addExchangeType === 'ibkr'">
@@ -282,9 +276,6 @@ export default {
     addExchangeNeedsPassphrase () {
       return ['okx', 'bitget', 'kucoin'].includes(this.selectedExchangeId)
     },
-    addExchangeShowDemo () {
-      return this.addExchangeType === 'crypto' && !!this.selectedExchangeId
-    },
     selectedCryptoExchangeMeta () {
       return this.cryptoExchangeList.find(item => item.id === this.selectedExchangeId) || null
     },
@@ -407,18 +398,6 @@ export default {
       const p = { ...values }
       if (p.exchange_id === 'mt5' && p.mt5_login != null && p.mt5_login !== '') {
         p.mt5_login = String(p.mt5_login)
-      }
-      // validateFields(部分字段名) 返回的 values 往往只含参与校验的项，不含「模拟盘/测试网」勾选，
-      // 会导致 test-connection 与保存凭证时永远不带 enable_demo_trading。
-      if (this.addExchangeType === 'crypto' && this.exchangeForm) {
-        try {
-          const demo = this.exchangeForm.getFieldValue('enable_demo_trading')
-          if (demo !== undefined && demo !== null) {
-            p.enable_demo_trading = !!demo
-          }
-        } catch (e) {
-          // ignore
-        }
       }
       return p
     },
@@ -679,14 +658,6 @@ export default {
     word-break: break-all;
   }
 
-  .exchange-demo-checkbox-label {
-    color: rgba(0, 0, 0, 0.85);
-  }
-
-  .exchange-demo-hint {
-    margin-top: 6px;
-  }
-
   .field-hint {
     margin-top: 6px;
     font-size: 12px;
@@ -811,11 +782,6 @@ export default {
       }
     }
 
-    .exchange-demo-checkbox-label {
-      color: @exchange-dark-text !important;
-    }
-
-    .exchange-demo-hint,
     .egress-ip-hint {
       color: @exchange-dark-muted !important;
     }

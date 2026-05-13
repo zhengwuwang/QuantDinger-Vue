@@ -700,7 +700,10 @@ export default {
   }
 
   .settings-nav {
-    flex: 0 0 240px;
+    // Wide enough for the longest group label in any supported locale
+    // (some Chinese / German / Russian group names ran over the previous
+    // 240px and forced a horizontal scrollbar in the side rail).
+    flex: 0 0 280px;
     position: sticky;
     top: 88px;
     background: #fff;
@@ -708,7 +711,11 @@ export default {
     box-shadow: @card-shadow;
     padding: 16px 0;
     max-height: calc(100vh - 200px);
-    overflow: auto;
+    // Allow vertical scroll for long lists, but never let the side rail
+    // grow a horizontal scrollbar — overflow is handled by ellipsis on
+    // the menu-item label instead.
+    overflow-x: hidden;
+    overflow-y: auto;
 
     .settings-search {
       padding: 0 16px 12px;
@@ -728,11 +735,27 @@ export default {
         height: 40px;
         line-height: 40px;
         padding-left: 16px !important;
+        padding-right: 12px !important;
         color: #475569;
         font-weight: 500;
+        // Ant Design's default for menu-item is to clip long labels,
+        // which the browser turns into a horizontal scrollbar on the
+        // parent. Force an ellipsis on the label span so overly long
+        // group titles degrade gracefully without shifting layout.
+        display: flex;
+        align-items: center;
 
         .anticon {
           color: #94a3b8;
+          flex: 0 0 auto;
+        }
+
+        > span:not(.anticon) {
+          flex: 1 1 auto;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         &:hover {

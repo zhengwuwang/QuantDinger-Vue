@@ -12,14 +12,6 @@
       </div>
     </div>
 
-    <a-alert
-      v-if="!desktopBrokersAllowed && !desktopBrokersAllowedLoading"
-      type="warning"
-      show-icon
-      class="ba-cloud-alert"
-      :message="$t('brokerAccounts.cloudOnlyAlert')"
-    />
-
     <crypto-exchange-accounts-card :is-dark-theme="isDarkTheme" />
 
     <div class="ba-section-divider">

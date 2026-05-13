@@ -66,12 +66,53 @@
           </a-form-model-item>
 
           <a-form-model-item :label="$t('trading-bot.wizard.symbol')" prop="symbol">
-            <a-auto-complete
-              v-model="baseForm.symbol"
-              :data-source="symbolSuggestions"
-              :placeholder="$t('trading-bot.wizard.symbolPh')"
-              :filter-option="filterSymbol"
-            />
+            <a-select
+              v-model="selectedSymbolKey"
+              :placeholder="watchlistPlaceholder"
+              :loading="loadingWatchlist"
+              show-search
+              allow-clear
+              option-label-prop="label"
+              :filter-option="filterSymbolOption"
+              :not-found-content="loadingWatchlist ? undefined : watchlistEmptyText"
+              :dropdown-class-name="isDarkTheme ? 'bot-symbol-dropdown bot-symbol-dropdown--dark' : 'bot-symbol-dropdown'"
+              :get-popup-container="symbolSelectGetPopupContainer"
+              @change="handleSymbolChange"
+            >
+              <a-select-option
+                v-for="w in cryptoWatchlist"
+                :key="w.symbol"
+                :value="w.symbol"
+                :label="w.symbol"
+              >
+                <strong class="bot-symbol-opt-code">{{ w.symbol }}</strong>
+                <span v-if="w.name && w.name !== w.symbol" class="bot-symbol-opt-name">{{ w.name }}</span>
+              </a-select-option>
+              <a-select-option
+                v-if="legacySymbolOption"
+                :key="'__current__:' + legacySymbolOption.symbol"
+                :value="legacySymbolOption.symbol"
+                :label="legacySymbolOption.symbol"
+                class="bot-symbol-opt-legacy"
+              >
+                <strong class="bot-symbol-opt-code">{{ legacySymbolOption.symbol }}</strong>
+                <a-tag color="orange" class="bot-symbol-opt-tag">{{ $t('trading-bot.wizard.symbolNotInWatchlist') }}</a-tag>
+              </a-select-option>
+              <a-select-option
+                key="__add__"
+                value="__add__"
+                :label="$t('trading-bot.wizard.addSymbol')"
+                class="bot-symbol-opt-add"
+              >
+                <a-icon type="plus" /> {{ $t('trading-bot.wizard.addSymbol') }}
+              </a-select-option>
+            </a-select>
+            <div class="form-hint" style="margin-top: 6px;">
+              <a-icon type="info-circle" /> {{ watchlistHint }}
+              <a v-if="watchlist.length > 0" class="bot-symbol-refresh" @click="loadWatchlist">
+                <a-icon type="reload" :spin="loadingWatchlist" /> {{ $t('trading-bot.wizard.refreshWatchlist') }}
+              </a>
+            </div>
           </a-form-model-item>
 
           <a-form-model-item v-if="!isGridOrMartingaleBot" :label="$t('trading-bot.wizard.timeframe')">
@@ -299,13 +340,70 @@
         {{ isEditMode ? $t('trading-bot.wizard.save') : $t('trading-bot.wizard.create') }}
       </a-button>
     </div>
+
+    <!-- 添加自选标的弹窗（仅支持 Crypto，机器人后端只跑 Crypto） -->
+    <a-modal
+      :title="$t('trading-bot.wizard.addSymbolTitle')"
+      :visible="showAddSymbolModal"
+      :confirmLoading="addingSymbol"
+      width="520px"
+      :ok-button-props="{ props: { disabled: !addSelectedItem } }"
+      :get-container="addSymbolModalGetContainer"
+      @ok="handleAddSymbol"
+      @cancel="closeAddSymbolModal"
+    >
+      <div class="bot-add-symbol-hint">
+        <a-icon type="info-circle" /> {{ $t('trading-bot.wizard.addSymbolHint') }}
+      </div>
+      <a-input-search
+        v-model="addSearchKeyword"
+        :placeholder="$t('trading-bot.wizard.symbolSearchPh')"
+        :loading="addSearching"
+        size="large"
+        allow-clear
+        style="margin: 12px 0;"
+        @search="doAddSymbolSearch"
+        @change="onAddSymbolSearchInput"
+      />
+      <a-list
+        v-if="addSearchResults.length > 0"
+        size="small"
+        :data-source="addSearchResults"
+        style="max-height: 260px; overflow-y: auto;"
+      >
+        <a-list-item
+          slot="renderItem"
+          slot-scope="item"
+          style="cursor: pointer;"
+          :class="{ 'bot-add-item-active': addSelectedItem && addSelectedItem.symbol === item.symbol }"
+          @click="addSelectedItem = item"
+        >
+          <strong>{{ item.symbol }}</strong>
+          <span v-if="item.name" style="color: #999; margin-left: 8px;">{{ item.name }}</span>
+          <a-icon
+            v-if="addSelectedItem && addSelectedItem.symbol === item.symbol"
+            type="check-circle"
+            theme="filled"
+            style="color: #52c41a; margin-left: auto;"
+          />
+        </a-list-item>
+      </a-list>
+      <div
+        v-else-if="addSearched && addSearchKeyword"
+        class="bot-add-symbol-empty"
+      >
+        {{ $t('trading-bot.wizard.symbolNoResult') }}
+      </div>
+    </a-modal>
   </div>
 </template>
 
 <script>
 import request from '@/utils/request'
+import { mapGetters } from 'vuex'
 import { createStrategy, updateStrategy } from '@/api/strategy'
 import { listExchangeCredentials } from '@/api/credentials'
+import { getWatchlist, addWatchlist, searchSymbols } from '@/api/market'
 import { generateBotScript } from './botScriptTemplates'
 import GridConfig from './configs/GridConfig.vue'
 import MartingaleConfig from './configs/MartingaleConfig.vue'
@@ -363,7 +461,7 @@ export default {
       baseRules: {
         botName: [{ required: true, message: this.$t('trading-bot.wizard.botNameReq'), trigger: 'blur' }],
         credentialId: [{ required: true, message: this.$t('trading-bot.wizard.credentialReq'), trigger: 'change' }],
-        symbol: [{ required: true, message: this.$t('trading-bot.wizard.symbolReq'), trigger: 'blur' }],
+        symbol: [{ required: true, message: this.$t('trading-bot.wizard.symbolReq'), trigger: 'change' }],
         initialCapital: [{ required: true, type: 'number', min: 10, message: this.$t('trading-bot.wizard.capitalReq'), trigger: 'change' }]
       },
       strategyParams: {},
@@ -373,14 +471,65 @@ export default {
         maxPosition: 5000,
         maxDailyLoss: 500
       },
-      symbolSuggestions: [
-        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
-        'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'MATIC/USDT',
-        'LINK/USDT', 'UNI/USDT', 'ATOM/USDT', 'LTC/USDT', 'FIL/USDT'
-      ]
+      // 自选标的列表（从 qd_watchlist 拉取，按 market 过滤后只展示 Crypto）
+      watchlist: [],
+      loadingWatchlist: false,
+      // a-select 的内部 v-model；其值与 baseForm.symbol 等价，但拦截
+      // 特殊值 `__add__` 用于触发添加弹窗，避免直接污染表单 symbol。
+      selectedSymbolKey: undefined,
+      // 添加自选弹窗状态
+      showAddSymbolModal: false,
+      addSearchKeyword: '',
+      addSearchResults: [],
+      addSelectedItem: null,
+      addSearching: false,
+      addSearched: false,
+      addingSymbol: false,
+      addSearchTimer: null
     }
   },
   computed: {
+    ...mapGetters(['userInfo', 'theme']),
+    userId () {
+      const info = this.userInfo || {}
+      return info.id || info.user_id || null
+    },
+    isDarkTheme () {
+      return String(this.theme || '').toLowerCase() === 'dark'
+    },
+    // 机器人后端 trading executor 只跑 Crypto，所以这里只展示用户自选表里
+    // market = Crypto 的项；非 Crypto 自选项会在后续策略页/分析页里使用。
+    cryptoWatchlist () {
+      return (this.watchlist || []).filter(w => w && w.symbol && String(w.market || '').toLowerCase() === 'crypto')
+    },
+    // 当 baseForm.symbol 不在用户自选表里时（例如编辑老机器人或 AI 预设
+    // 给了一个用户没收藏过的交易对），单独构造一项占位选项，避免下拉里
+    // 显示成空白；同时挂一个 "未在自选" 的标签提示用户。
+    legacySymbolOption () {
+      const sym = (this.baseForm.symbol || '').trim()
+      if (!sym) return null
+      const exists = this.cryptoWatchlist.some(w => w.symbol === sym)
+      if (exists) return null
+      return { symbol: sym }
+    },
+    watchlistPlaceholder () {
+      if (this.cryptoWatchlist.length === 0) {
+        return this.isZhLocale
+          ? '请先添加自选币种'
+          : 'Please add a symbol to your watchlist'
+      }
+      return this.$t('trading-bot.wizard.symbolPh')
+    },
+    watchlistEmptyText () {
+      return this.isZhLocale
+        ? '自选币种为空，点击下拉中的“+”添加'
+        : 'Watchlist is empty. Click "+" in the dropdown to add a symbol.'
+    },
+    watchlistHint () {
+      return this.isZhLocale
+        ? '从自选币种中选择；如未收藏，点击下拉里的“添加自选”按钮即可补充。'
+        : 'Pick from your watchlist. Use "Add Symbol" inside the dropdown to add a new pair.'
+    },
     isEditMode () {
       return !!this.editBot
     },
@@ -481,6 +630,14 @@ export default {
         this.riskForm.maxPosition = val
       }
       this.riskForm.maxDailyLoss = Math.round(val * 0.1)
+    },
+    // baseForm.symbol 与下拉框选中值双向同步：编辑机器人 / AI 预设
+    // 都会先改 baseForm.symbol，这里再把它映射回下拉显示值。
+    'baseForm.symbol': {
+      immediate: true,
+      handler (val) {
+        this.selectedSymbolKey = val || undefined
+      }
     }
   },
   created () {
@@ -490,10 +647,23 @@ export default {
     } else {
       this.applyAiPreset()
     }
+    this.loadWatchlist()
+  },
+  beforeDestroy () {
+    if (this.addSearchTimer) {
+      clearTimeout(this.addSearchTimer)
+      this.addSearchTimer = null
+    }
   },
   methods: {
     shouldShowStrategyParam (key) {
       if (key === 'referencePrice') return this.botType === 'grid'
+      // Hide the trailing TP activation / callback details on the confirm
+      // screen when trailing TP is OFF — otherwise users would see stray
+      // "0.8%" rows for a feature they didn't enable, which is confusing.
+      if (key === 'trailingTpActivationPct' || key === 'trailingTpCallbackPct') {
+        return this.strategyParams && this.strategyParams.trailingTpEnabled === true
+      }
       return !String(key || '').startsWith('_')
     },
     fallbackLabel (zh, en) {
@@ -524,7 +694,11 @@ export default {
         frequency: this.$t('trading-bot.dca.frequency'),
         totalBudget: this.$t('trading-bot.dca.totalBudget'),
         dipBuyEnabled: this.$t('trading-bot.dca.dipBuy'),
-        dipThreshold: this.$t('trading-bot.dca.dipThreshold')
+        dipThreshold: this.$t('trading-bot.dca.dipThreshold'),
+        // Trailing TP fields (shared between martingale and trend bots).
+        trailingTpEnabled: this.fallbackLabel('启用追踪止盈', 'Trailing TP'),
+        trailingTpActivationPct: this.fallbackLabel('追踪止盈激活涨幅', 'Trailing TP Activation %'),
+        trailingTpCallbackPct: this.fallbackLabel('追踪止盈回撤幅度', 'Trailing TP Callback %')
       }
       return map[key] || key
     },
@@ -578,10 +752,11 @@ export default {
         }
         return map[value] || value
       }
-      if (key === 'dipBuyEnabled') {
+      if (key === 'dipBuyEnabled' || key === 'trailingTpEnabled') {
         return value ? this.fallbackLabel('开启', 'Enabled') : this.fallbackLabel('关闭', 'Disabled')
       }
-      if (['priceDropPct', 'takeProfitPct', 'stopLossPct', 'dipThreshold', 'positionPct'].includes(key)) {
+      if (['priceDropPct', 'takeProfitPct', 'stopLossPct', 'dipThreshold', 'positionPct',
+           'trailingTpActivationPct', 'trailingTpCallbackPct'].includes(key)) {
         return `${value}%`
       }
       if ([
@@ -671,8 +846,137 @@ export default {
       this.riskForm.maxPosition = this.botType === 'martingale' ? 0 : null
       this.riskForm.maxDailyLoss = null
     },
-    filterSymbol (input, option) {
-      return option.toUpperCase().indexOf(input.toUpperCase()) >= 0
+    // ===== 自选标的（watchlist 模式） =====
+    async loadWatchlist () {
+      this.loadingWatchlist = true
+      try {
+        const res = await getWatchlist({ userid: this.userId })
+        if (res && res.code === 1 && Array.isArray(res.data)) {
+          this.watchlist = res.data
+        }
+      } catch (e) {
+        // 静默失败：用户没收藏过任何自选时也可能 401/空，保持空数组即可
+      } finally {
+        this.loadingWatchlist = false
+      }
+    },
+    filterSymbolOption (input, option) {
+      const val = String(option.componentOptions?.propsData?.value || '').toLowerCase()
+      if (val === '__add__') return true
+      const q = String(input || '').trim().toLowerCase()
+      if (!q) return true
+      // 拼接 symbol + 显示名一起做匹配，避免用户只记得名称的情况漏匹配。
+      const row = this.cryptoWatchlist.find(w => w.symbol === option.componentOptions.propsData.value)
+      const haystack = (val + ' ' + ((row && row.name) || '')).toLowerCase()
+      return haystack.includes(q)
+    },
+    handleSymbolChange (val) {
+      if (val === '__add__') {
+        // 触发添加自选弹窗；同时把下拉值回退到旧 symbol，避免 select 显示成 "__add__"
+        this.$nextTick(() => {
+          this.selectedSymbolKey = this.baseForm.symbol || undefined
+        })
+        this.openAddSymbolModal()
+        return
+      }
+      this.baseForm.symbol = val || ''
+      this.selectedSymbolKey = val || undefined
+    },
+    symbolSelectGetPopupContainer (trigger) {
+      // 弹窗模式下挂载到当前 wizard 容器，避免 modal 关闭时下拉残留
+      if (this.isModal) {
+        return trigger.parentNode || document.body
+      }
+      return document.body
+    },
+    addSymbolModalGetContainer () {
+      // 让 modal 始终挂到 body（默认行为）但保留扩展点，
+      // wizard 自身嵌在父 modal 里时 ant 也能正确叠放层级。
+      return document.body
+    },
+    openAddSymbolModal () {
+      this.addSearchKeyword = ''
+      this.addSearchResults = []
+      this.addSelectedItem = null
+      this.addSearched = false
+      this.showAddSymbolModal = true
+    },
+    closeAddSymbolModal () {
+      if (this.addSearchTimer) {
+        clearTimeout(this.addSearchTimer)
+        this.addSearchTimer = null
+      }
+      this.showAddSymbolModal = false
+    },
+    onAddSymbolSearchInput () {
+      if (this.addSearchTimer) {
+        clearTimeout(this.addSearchTimer)
+        this.addSearchTimer = null
+      }
+      const kw = String(this.addSearchKeyword || '').trim()
+      if (!kw) {
+        this.addSearchResults = []
+        this.addSelectedItem = null
+        this.addSearched = false
+        return
+      }
+      this.addSearchTimer = setTimeout(() => this.doAddSymbolSearch(), 400)
+    },
+    async doAddSymbolSearch () {
+      const kw = String(this.addSearchKeyword || '').trim()
+      if (!kw) return
+      this.addSearching = true
+      try {
+        const res = await searchSymbols({ market: 'Crypto', keyword: kw, limit: 20 })
+        const list = (res && Array.isArray(res.data)) ? res.data : []
+        this.addSearchResults = list
+        this.addSearched = true
+        if (list.length === 0) {
+          // 没搜到也允许用户原样添加（例如非常冷门的交易对），
+          // 与 indicator-ide 行为保持一致，符合用户对"自由补充"的预期。
+          this.addSelectedItem = { market: 'Crypto', symbol: kw.toUpperCase(), name: '' }
+        } else if (!this.addSelectedItem || !list.some(x => x.symbol === this.addSelectedItem.symbol)) {
+          this.addSelectedItem = list[0]
+        }
+      } catch (e) {
+        this.addSearchResults = []
+        this.addSelectedItem = { market: 'Crypto', symbol: kw.toUpperCase(), name: '' }
+        this.addSearched = true
+      } finally {
+        this.addSearching = false
+      }
+    },
+    async handleAddSymbol () {
+      const item = this.addSelectedItem
+      if (!item || !item.symbol) {
+        this.$message.warning(this.$t('trading-bot.wizard.symbolReq'))
+        return
+      }
+      this.addingSymbol = true
+      try {
+        const symbol = String(item.symbol).toUpperCase()
+        await addWatchlist({
+          userid: this.userId,
+          market: 'Crypto',
+          symbol,
+          name: item.name || ''
+        })
+        await this.loadWatchlist()
+        this.baseForm.symbol = symbol
+        this.selectedSymbolKey = symbol
+        this.$message.success(this.$t('trading-bot.wizard.addSymbolSuccess'))
+        this.closeAddSymbolModal()
+        // 让 a-form-model 重新校验 symbol，去掉之前的红框提示
+        this.$nextTick(() => {
+          if (this.$refs.baseForm) {
+            try { this.$refs.baseForm.clearValidate(['symbol']) } catch (_) {}
+          }
+        })
+      } catch (e) {
+        this.$message.error((e && e.message) || this.$t('trading-bot.wizard.addSymbolFail'))
+      } finally {
+        this.addingSymbol = false
+      }
     },
     async loadCredentials () {
       this.loadingCredentials = true
@@ -956,5 +1260,58 @@ export default {
   margin-top: 20px;
 
   .spacer { flex: 1; }
+}
+
+/* ===== Symbol picker (watchlist mode) ===== */
+.bot-symbol-opt-code {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.bot-symbol-opt-name {
+  margin-left: 8px;
+  color: #999;
+  font-size: 12px;
+}
+
+.bot-symbol-opt-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.bot-symbol-opt-add .anticon {
+  color: #1890ff;
+  margin-right: 6px;
+}
+
+.bot-symbol-refresh {
+  margin-left: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #1890ff;
+
+  .anticon { margin-right: 4px; }
+}
+
+.bot-add-symbol-hint {
+  font-size: 13px;
+  color: #595959;
+  background: rgba(24, 144, 255, 0.08);
+  border-radius: 6px;
+  padding: 8px 12px;
+
+  .anticon { color: #1890ff; margin-right: 6px; }
+}
+
+.bot-add-symbol-empty {
+  padding: 16px 0;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+}
+
+.bot-add-item-active {
+  background: rgba(82, 196, 26, 0.08);
 }
 </style>
